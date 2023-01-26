@@ -1,0 +1,195 @@
+---
+title: "Evaluating potential bias in linear fits"
+author: "Evan Sherwin"
+date: "1/14/2023"
+output: pdf_document
+---
+
+Exploration of linear fit methods for parity charts
+
+```{r}
+# Load libraries
+library(lmodel2)
+library(MASS)
+library(readxl)
+```
+
+Load York Fit function
+
+```{r setup, include=FALSE}
+# Copy-paste of the YorkFIT code from "stanford_harvard_YorkFit.r"
+
+# file to create function YorkFit( )
+#"YorkFit", written by Rick Wehr, 2011, translated into R by Rachel Chang
+
+#Universal routine for finding the best straight line fit
+#to data with variable, correlated errors,
+#including error and goodness of fit estimates, following Eq. (13) of
+#York 2004, American Journal of Physics, which was based in turn on
+#York 1969, Earth and Planetary Sciences Letters
+
+YorkFit <- function(X,Y, Xstd, Ystd, Ri=0, b0=0, printCoefs=0, makeLine=0,eps=1e-7){
+
+#X, Y, Xstd, Ystd: waves containing X points, Y points, and their standard deviations
+#  WARNING: Xstd and Ystd cannot be zero as this will cause Xw or Yw to be NaN
+#  Use a very small value instead.
+#Ri: correlation coefficients for X and Y errors -- length 1 or length of X and Y
+#b0: rough initial guess for the slope (can be gotten from a standard least-squares fit without errors)
+#printCoefs: set equal to 1 to display results in the command window
+#makeLine: set equal to 1 to generate a Y wave for the fit line
+#Returns a matrix with the intercept and slope plus their uncertainties
+	
+#If no initial guess for b0 is provided, then just use OLS
+	if (b0 == 0) {b0 = lm(Y~X)$coefficients[2]}	
+
+	tol = abs(b0)*eps #the fit will stop iterating when the slope converges to within this value
+	
+#a,b: final intercept and slope
+#a.err, b.err: estimated uncertainties in intercept and slope
+
+	
+	# WAVE DEFINITIONS #
+	
+	Xw = 1/(Xstd^2) #X weights
+ 	Yw = 1/(Ystd^2) #Y weights
+ 	
+	 	 
+ 	# ITERATIVE CALCULATION OF SLOPE AND INTERCEPT #
+ 	
+ 	b = b0
+	b.diff = tol + 1
+	while(b.diff>tol)
+{
+		b.old = b
+		alpha.i = sqrt(Xw*Yw)
+		Wi = (Xw*Yw)/((b^2)*Yw + Xw - 2*b*Ri*alpha.i)
+		WiX = Wi*X
+		WiY = Wi*Y
+		sumWiX = sum(WiX, na.rm = TRUE)
+		sumWiY = sum(WiY, na.rm = TRUE)
+		sumWi = sum(Wi, na.rm = TRUE)
+		Xbar = sumWiX/sumWi
+		Ybar = sumWiY/sumWi
+		Ui = X - Xbar
+		Vi = Y - Ybar
+		
+		Bi = Wi*((Ui/Yw) + (b*Vi/Xw) - (b*Ui+Vi)*Ri/alpha.i)
+		wTOPint = Bi*Wi*Vi
+		wBOTint = Bi*Wi*Ui
+		sumTOP = sum(wTOPint, na.rm=TRUE)
+		sumBOT = sum(wBOTint, na.rm=TRUE)
+		b = sumTOP/sumBOT
+		
+		b.diff = abs(b-b.old)
+}		
+	
+	a = Ybar - b*Xbar
+	wYorkFitCoefs = c(a,b)
+	
+	# ERROR CALCULATION #
+	
+	Xadj = Xbar + Bi
+	WiXadj = Wi*Xadj
+	sumWiXadj = sum(WiXadj, na.rm=TRUE)
+	Xadjbar = sumWiXadj/sumWi
+	Uadj = Xadj - Xadjbar
+	wErrorTerm = Wi*Uadj*Uadj
+	errorSum = sum(wErrorTerm, na.rm=TRUE)
+	b.err = sqrt(1/errorSum)
+	a.err = sqrt((1/sumWi) + (Xadjbar^2)*(b.err^2))
+	wYorkFitErrors = c(a.err,b.err)
+	
+	# GOODNESS OF FIT CALCULATION #
+	lgth = length(X)
+	wSint = Wi*(Y - b*X - a)^2
+	sumSint = sum(wSint, na.rm=TRUE)
+	wYorkGOF = c(sumSint/(lgth-2),sqrt(2/(lgth-2))) #GOF (should equal 1 if assumptions are valid), #standard error in GOF
+	
+	# OPTIONAL OUTPUTS #
+	
+	if(printCoefs==1)
+{
+		print(paste("intercept = ", a, " +/- ", a.err, sep=""))
+		print(paste("slope = ", b, " +/- ", b.err, sep=""))
+}
+	if(makeLine==1)
+{
+		wYorkFitLine = a + b*X
+}
+ans=rbind(c(a,a.err),c(b, b.err)) ; dimnames(ans)=list(c("Int","Slope"),c("Value","Sigma"))
+	return(ans)
+}
+# apply OLS and Type II regressions MA, SMA, and York Fit
+```
+
+Simulate test data from a sensor with a parity slope of 1:1 (unbiased estimation), but:
+1) Normally distributed Y-direction error (quantification error) in percentage terms with a standard deviation of 45%
+2) Normally distributed X-direction error (quantification error) in percentage terms with a standard deviation of 5.5%
+3) X drawn from a uniform distribution between 0.2 and 8 t/h
+This should be a simulation of a sensor that works perfectly, but with some unbiased error, under realistic conditions.
+```{r}
+# Generate a completely uncorrelated x-y dataset (both from standard normal distributions)
+set.seed(1)
+x_y_corr <- 0
+sample_size <-1000 # 100 21
+min_emission <- 0.2 # t/hr
+max_emission <- 8 # t/hr
+instrument_bias_multiplier <- 1 # 1 if instrument is unbiased, >1 means its estimates are high, etc.
+x_err_sd <- 0.055 # 5.5% metering error standard deviation, translates to a 95% CI of about ±12%
+y_err_sd <- 0.45 # 45% methane sensing instrument measurement error standard deviation
+x_sim <- runif(sample_size, min_emission, max_emission)
+x_err_pct <- rnorm(sample_size, 0, x_err_sd) # Add in simulated meter error
+y_err_pct <- rnorm(sample_size, 0, y_err_sd) # Add in simulated measurement uncertainty
+null_hyp_df_parity <- data.frame(x_sim*(1 + x_err_pct)) # Generate simulated metered flow rates
+null_hyp_df_parity$y_sim <- x_sim*(1 + y_err_pct)*instrument_bias_multiplier # Generate simulated methane quantification measurements
+model2_norm_parity <-  suppressMessages(lmodel2(y_sim ~ x_sim, data=null_hyp_df_parity)) # Compute key regression statistics
+model2_norm_parity$regression.results
+```
+```{r}
+model2_norm_parity$confidence.intervals
+```
+R squared value
+```{r}
+model2_norm_parity$rsquare
+```
+Apply a York fit to the simulated parity data
+```{r}
+# Apply a York fit to the simulated parity data for an unbiased instrument
+sim_parity_york_fit <- YorkFit(X=null_hyp_df_parity$x_sim....1...x_err_pct., Y=null_hyp_df_parity$y_sim, Xstd=x_sim*x_err_pct, Ystd=x_sim*y_err_pct)
+sim_parity_york_fit
+```
+```{r}
+# 95% CI for slope and intercept
+CI95mult = 1.96
+sim_parity_york_fit[,1] - sim_parity_york_fit[,2]*CI95mult
+sim_parity_york_fit[,1] + sim_parity_york_fit[,2]*CI95mult
+```
+
+
+Plot OLS fit
+```{r}
+plot(model2_norm_parity, 'OLS')
+```
+Plot SMA fit
+```{r}
+plot(model2_norm_parity, 'SMA')
+```
+
+Remove all datapoints with quantified emissions below X t/hr, re-fit OLS
+```{r}
+min_quantified_size_to_include <- 3 # 1, 2, 3 # t/h
+null_hyp_df_parity_truncated <- null_hyp_df_parity[null_hyp_df_parity$y_sim >= min_quantified_size_to_include,]
+null_hyp_df_parity_truncated$x_metered <- null_hyp_df_parity_truncated$x_sim....1...x_err_pct.
+OLS_trunc_parity <-  lm(y_sim ~ x_metered, data=null_hyp_df_parity_truncated) # Compute key regression statistics
+OLS_trunc_parity$coefficients
+confint(OLS_trunc_parity, level=.95) 
+```
+Fix the y-intercept at zero for the same dataset
+```{r}
+OLS_trunc_parity_zeroint <-  lm(y_sim ~ -1 + x_metered, data=null_hyp_df_parity_truncated) # Compute key regression statistics
+OLS_trunc_parity_zeroint$coefficients
+confint(OLS_trunc_parity_zeroint, level=.95) 
+```
+```{r}
+dim(null_hyp_df_parity_truncated)
+```
